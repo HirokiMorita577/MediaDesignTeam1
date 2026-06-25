@@ -6,6 +6,7 @@ import numpy as np
 import time
 from pacman_env import PacManEnv
 from dqn_agent import DQNAgent
+from plot_curve import plot_learning_curve
 
 
 def main():
@@ -14,15 +15,18 @@ def main():
     print("=" * 60)
 
     # ── 1. 高速訓練 (描画なし) ──
-    print("\n[1/2] 200エピソード高速訓練中...")
+    EPISODES = 800
+    print(f"\n[1/2] {EPISODES}エピソード高速訓練中...")
     env = PacManEnv(render_mode=None)
     obs_size = env.observation_space.shape[0]
     agent = DQNAgent(obs_size=obs_size, n_actions=4,
-                     epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.99)
+                     epsilon_start=1.0, epsilon_end=0.05, epsilon_decay=0.995,
+                     batch_size=128, target_update_freq=300)
 
     scores = []
+    best_score = 0
     t0 = time.time()
-    for ep in range(1, 201):
+    for ep in range(1, EPISODES + 1):
         obs, _ = env.reset()
         while True:
             action = agent.select_action(obs)
@@ -33,11 +37,20 @@ def main():
             if terminated or truncated:
                 break
         scores.append(info["score"])
-        if ep % 50 == 0:
-            print(f"  Ep {ep:3d}/200  Avg50={np.mean(scores[-50:]):.0f}  ε={agent.epsilon:.3f}")
+        if info["score"] > best_score:
+            best_score = info["score"]
+            agent.save("pacman_model.pt")  # ベストスコア時のみ保存
+        if ep % 100 == 0:
+            avg = np.mean(scores[-100:])
+            bar = "#" * int(avg / 20)
+            print(f"  Ep {ep:3d}/{EPISODES}  Avg100={avg:5.0f} {bar:<20}  Best={best_score}  e={agent.epsilon:.3f}")
 
-    agent.save("pacman_model.pt")
-    print(f"  訓練完了 ({time.time()-t0:.1f}秒)  最高スコア: {max(scores)}")
+    # 最終モデルも保存
+    agent.save("pacman_model.pt") if best_score == 0 else None
+    print(f"  訓練完了 ({time.time()-t0:.1f}秒)  最高スコア: {best_score}")
+
+    # 学習曲線グラフ保存
+    plot_learning_curve(scores, save_path="learning_curve.png")
     env.close()
 
     # ── 2. カーナビ風表示でプレイ ──
@@ -60,6 +73,7 @@ def main():
                     env2.close()
                     return
             action = agent.select_action(obs, training=False)
+            env2.set_qvalues(agent.get_qvalues(obs))
             obs, _, terminated, truncated, info = env2.step(action)
             if terminated or truncated:
                 print(f"  スコア: {info['score']}")

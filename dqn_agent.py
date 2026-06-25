@@ -62,7 +62,7 @@ class DQNAgent:
         self.target_update_freq = target_update_freq
         self.steps = 0
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self._get_device()
         print(f"Using device: {self.device}")
 
         self.policy_net = DQNNetwork(obs_size, n_actions).to(self.device)
@@ -74,13 +74,33 @@ class DQNAgent:
         self.buffer = ReplayBuffer()
         self.loss_history = []
 
+    @staticmethod
+    def _get_device():
+        """CUDA → DirectML (Intel/AMD GPU) → CPU の優先順で選択"""
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        try:
+            import torch_directml
+            dml = torch_directml.device()
+            # 動作確認: 小さいテンソルを作れるか試す
+            torch.tensor([1.0]).to(dml)
+            return dml
+        except Exception:
+            pass
+        return torch.device("cpu")
+
+    def get_qvalues(self, state):
+        """現在の状態のQ値をnumpy配列で返す"""
+        state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            q = self.policy_net(state_t)
+        return q.squeeze(0).cpu().numpy()
+
     def select_action(self, state, training=True):
         if training and random.random() < self.epsilon:
             return random.randrange(self.n_actions)
-        state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            q_values = self.policy_net(state_t)
-        return q_values.argmax(dim=1).item()
+        q_values = self.get_qvalues(state)
+        return int(np.argmax(q_values))
 
     def push(self, state, action, reward, next_state, done):
         self.buffer.push(state, action, reward, next_state, done)
@@ -126,9 +146,12 @@ class DQNAgent:
         print(f"Model saved: {path}")
 
     def load(self, path):
-        ckpt = torch.load(path, map_location=self.device)
+        # DirectML は map_location に直接渡せないので CPU 経由でロード
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
         self.policy_net.load_state_dict(ckpt["policy"])
+        self.policy_net.to(self.device)
         self.target_net.load_state_dict(ckpt["policy"])
+        self.target_net.to(self.device)
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.epsilon = ckpt["epsilon"]
         self.steps = ckpt["steps"]

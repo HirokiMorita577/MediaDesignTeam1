@@ -11,6 +11,7 @@ import time
 import numpy as np
 from pacman_env import PacManEnv
 from dqn_agent import DQNAgent
+from plot_curve import plot_learning_curve
 
 
 def train(args):
@@ -73,11 +74,11 @@ def train(args):
             avg_loss  = np.mean(losses[-50:]) if losses else 0
             elapsed   = time.time() - start_time
             bar_len   = int(avg_score / 50)
-            bar       = "█" * min(bar_len, 30)
+            bar       = "#" * min(bar_len, 30)
             print(
                 f"Ep {ep:4d}/{args.episodes} | "
                 f"Score {info['score']:5d} | Avg50 {avg_score:6.1f} {bar:<30} | "
-                f"Loss {avg_loss:.4f} | ε {agent.epsilon:.3f} | {elapsed:.0f}s"
+                f"Loss {avg_loss:.4f} | e={agent.epsilon:.3f} | {elapsed:.0f}s"
             )
 
         # ベストモデル保存
@@ -85,13 +86,17 @@ def train(args):
             best_score = info["score"]
             agent.save(model_path)
 
-        # 定期保存
+        # 定期保存 + 途中グラフ
         if ep % 200 == 0:
             agent.save(f"pacman_model_ep{ep}.pt")
+            plot_learning_curve(scores, save_path="learning_curve.png")
 
     env.close()
     print(f"\n訓練完了! ベストスコア: {best_score}")
     print(f"モデル保存済み: {model_path}")
+
+    # 最終グラフ保存
+    plot_learning_curve(scores, save_path="learning_curve.png")
 
 
 if __name__ == "__main__":

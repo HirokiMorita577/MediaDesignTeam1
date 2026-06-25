@@ -69,9 +69,10 @@ def play(args):
                     if args.human and event.key in ACTION_MAP:
                         action = ACTION_MAP[event.key]
 
-            # AIアクション選択
+            # AIアクション選択 + Q値を環境へ渡す
             if not args.human and agent:
                 action = agent.select_action(obs, training=False)
+                env.set_qvalues(agent.get_qvalues(obs))
 
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
