@@ -50,19 +50,38 @@ DIRS = [(-1,0),(1,0),(0,-1),(0,1)]
 
 
 class Ghost:
-    def __init__(self, row, col, color):
-        self.start = (row, col)
-        self.pos = [row, col]
-        self.color = color
-        self.scared = False
+    """
+    本家パックマンの4体ゴースト行動を再現
+
+    Blinky（赤）  : パックマンの現在位置を直接追跡
+    Pinky（ピンク）: パックマンの進行方向4マス先を狙う（先回り）
+    Inky（水色）  : Blinkyとパックマンを使った挟み撃ち
+    Clyde（橙）   : 8マス以上遠い→追跡、近い→散開コーナーへ逃げる
+    """
+    # Clyde の散開コーナー（左下）
+    CLYDE_SCATTER = (20, 1)
+    # 散開モード時の各ゴーストのコーナー
+    SCATTER_TARGETS = [
+        (1,  17),   # Blinky → 右上
+        (1,   1),   # Pinky  → 左上
+        (20, 17),   # Inky   → 右下
+        (20,  1),   # Clyde  → 左下
+    ]
+
+    def __init__(self, row, col, color, ghost_id=0):
+        self.start    = (row, col)
+        self.pos      = [row, col]
+        self.color    = color
+        self.ghost_id = ghost_id   # 0:Blinky 1:Pinky 2:Inky 3:Clyde
+        self.scared       = False
         self.scared_timer = 0
-        self.last_pos = None  # 逆戻り防止用
+        self.last_pos     = None
 
     def reset(self):
-        self.pos = list(self.start)
-        self.scared = False
+        self.pos      = list(self.start)
+        self.scared       = False
         self.scared_timer = 0
-        self.last_pos = None
+        self.last_pos     = None
 
     def _valid_moves(self, grid):
         rows, cols = len(grid), len(grid[0])
@@ -74,7 +93,40 @@ class Ghost:
                 moves.append((nr, nc))
         return moves
 
-    def move(self, grid, pacman_pos, rng):
+    def _get_target(self, pacman_pos, pacman_dir, blinky_pos):
+        """本家ルールに基づいてターゲット座標を返す"""
+        pr, pc = pacman_pos
+        # 進行方向オフセット
+        dir_dr = {ACTION_UP:-1, ACTION_DOWN:1, ACTION_LEFT:0,  ACTION_RIGHT:0}
+        dir_dc = {ACTION_UP:0,  ACTION_DOWN:0, ACTION_LEFT:-1, ACTION_RIGHT:1}
+        dr = dir_dr.get(pacman_dir, 0)
+        dc = dir_dc.get(pacman_dir, 0)
+
+        if self.ghost_id == 0:   # Blinky: 現在位置を直接追跡
+            return (pr, pc)
+
+        elif self.ghost_id == 1: # Pinky: 進行方向4マス先
+            return (pr + dr*4, pc + dc*4)
+
+        elif self.ghost_id == 2: # Inky: 挟み撃ち
+            # パックマンの2マス先 → Blinkyからその2倍の延長線上
+            mid_r = pr + dr*2
+            mid_c = pc + dc*2
+            br, bc = blinky_pos
+            return (mid_r*2 - br, mid_c*2 - bc)
+
+        else:                    # Clyde: 距離8以上→追跡、近い→左下コーナー
+            dist = abs(self.pos[0]-pr) + abs(self.pos[1]-pc)
+            if dist >= 8:
+                return (pr, pc)
+            else:
+                return self.CLYDE_SCATTER
+
+    def move(self, grid, pacman_pos, pacman_dir, blinky_pos, rng, mode="classic"):
+        """
+        mode="bfs"     : 全ゴーストがパックマンを直接BFS追跡（シンプル版）
+        mode="classic" : 本家Pac-Manの4体個別ターゲット行動
+        """
         valid = self._valid_moves(grid)
         if not valid:
             return
@@ -84,33 +136,33 @@ class Ghost:
         candidates = no_reverse if no_reverse else valid
 
         if self.scared:
-            # 逃げる: BFSでパックマンから最も遠いマスへ
-            best, best_dist = candidates[0], -1
+            # パワーエサ中: パックマンから最も遠いマスへ逃げる
+            farthest_dist = -1
             for p in candidates:
-                dist = abs(p[0] - pacman_pos[0]) + abs(p[1] - pacman_pos[1])
-                if dist > best_dist:
-                    best_dist = dist
-                    best = p
-            # 同距離はランダム選択
-            farthest = [p for p in candidates if abs(p[0]-pacman_pos[0])+abs(p[1]-pacman_pos[1]) == best_dist]
+                d = abs(p[0]-pacman_pos[0]) + abs(p[1]-pacman_pos[1])
+                if d > farthest_dist:
+                    farthest_dist = d
+            farthest = [p for p in candidates
+                        if abs(p[0]-pacman_pos[0])+abs(p[1]-pacman_pos[1]) == farthest_dist]
             chosen = rng.choice(farthest)
         else:
-            # 追いかける: BFS最短経路でパックマンへ向かう
-            path = _bfs_next(grid, tuple(self.pos), pacman_pos)
-            if path and len(path) > 1:
-                next_step = path[1]
-                # BFS結果がcandidatesにあればそちら優先
-                if next_step in candidates:
-                    chosen = next_step
-                else:
-                    # 通常グリーディ（90%）or ランダム（10%）
-                    if rng.random() < 0.9:
-                        candidates.sort(key=lambda p: abs(p[0]-pacman_pos[0])+abs(p[1]-pacman_pos[1]))
-                        chosen = candidates[0]
-                    else:
-                        chosen = rng.choice(candidates)
+            # ターゲット決定: bfsモードは常にパックマン直接追跡
+            if mode == "bfs":
+                target = pacman_pos
             else:
-                chosen = rng.choice(candidates)
+                target = self._get_target(pacman_pos, pacman_dir, blinky_pos)
+
+            rows, cols = len(grid), len(grid[0])
+            target = (max(0, min(rows-1, target[0])),
+                      max(0, min(cols-1, target[1])))
+
+            path = _bfs_next(grid, tuple(self.pos), target)
+            if path and len(path) > 1 and path[1] in candidates:
+                chosen = path[1]
+            else:
+                # BFS失敗 → マンハッタン距離でターゲットに最も近い方向
+                candidates.sort(key=lambda p: abs(p[0]-target[0])+abs(p[1]-target[1]))
+                chosen = candidates[0]
 
         self.last_pos = self.pos[:]
         self.pos = list(chosen)
@@ -188,12 +240,17 @@ def find_nearest_dot(grid, pos):
 class PacManEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
 
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, ghost_mode="classic"):
+        """
+        ghost_mode="classic" : 本家Pac-Manの4体個別行動（Blinky/Pinky/Inky/Clyde）
+        ghost_mode="bfs"     : 全ゴーストがパックマンをBFSで直接追跡（シンプル版）
+        """
         super().__init__()
         self.base_map = [row[:] for row in DEFAULT_MAP]
         self.rows = len(self.base_map)
         self.cols = len(self.base_map[0])
         self.render_mode = render_mode
+        self.ghost_mode = ghost_mode
         self.cell_size = 28
         self.screen = None
         self.clock = None
@@ -220,15 +277,17 @@ class PacManEnv(gym.Env):
         self.power_timer = 0
         # ゴースト初期位置: ゴーストハウス内の通路セルに配置
         self.ghosts = [
-            Ghost(10, 9,  GHOST_COLORS[0]),  # 中央
-            Ghost(10, 8,  GHOST_COLORS[1]),  # 左
-            Ghost(10, 10, GHOST_COLORS[2]),  # 右
-            Ghost(12, 9,  GHOST_COLORS[3]),  # 下段
+            Ghost(10, 9,  GHOST_COLORS[0], ghost_id=0),  # Blinky（赤）   直接追跡
+            Ghost(10, 8,  GHOST_COLORS[1], ghost_id=1),  # Pinky（ピンク）先回り
+            Ghost(10, 10, GHOST_COLORS[2], ghost_id=2),  # Inky（水色）   挟み撃ち
+            Ghost(12, 9,  GHOST_COLORS[3], ghost_id=3),  # Clyde（橙）    距離で切替
         ]
         self.steps = 0
         self.planned_path = []
         self.target_pos = None
         self.last_qvalues = None      # Q値可視化用
+        self.pos_history = []         # ループ検出用の位置履歴
+        self.visited_cells = set()    # 未訪問セルボーナス用
         self.ghost_paths = [[] for _ in range(4)]  # ゴースト経路表示用
         self.prev_dot_dist = None     # 報酬シェーピング用
 
@@ -313,9 +372,29 @@ class PacManEnv(gym.Env):
             self.pacman = [nr, nc]
             self.pacman_dir = action
         else:
-            reward -= 0.5  # 壁衝突ペナルティ
+            pass  # 壁衝突: 報酬変化なし(0)
 
         r, c = self.pacman
+
+        # ── ループ検出（往復・同一セル滞留に罰則）──
+        HISTORY_LEN = 12   # 直近12ステップを監視
+        LOOP_THRESH  = 4   # 同じセルに4回以上いたらループ判定
+        self.pos_history.append((r, c))
+        if len(self.pos_history) > HISTORY_LEN:
+            self.pos_history.pop(0)
+        if len(self.pos_history) == HISTORY_LEN:
+            visit_count = self.pos_history.count((r, c))
+            if visit_count >= LOOP_THRESH:
+                # 滞在回数に応じて罰則を段階的に強化
+                loop_penalty = 1.0 + (visit_count - LOOP_THRESH) * 0.5
+                reward -= loop_penalty
+
+        # ── 未訪問セルへの探索ボーナス ──
+        if not hasattr(self, 'visited_cells'):
+            self.visited_cells = set()
+        if (r, c) not in self.visited_cells:
+            self.visited_cells.add((r, c))
+            reward += 0.1   # 新しいセルを訪問したら小さなボーナス
 
         # ── エサ取得 ──
         if self.grid[r][c] == CELL_DOT:
@@ -334,13 +413,14 @@ class PacManEnv(gym.Env):
                 g.scared = True
                 g.scared_timer = 40
 
-        # ── エサへの接近ボーナス (報酬シェーピング) ──
-        curr_dist = self._nearest_dot_dist()
-        if self.prev_dot_dist is not None and curr_dist < self.prev_dot_dist:
-            reward += 0.3   # エサに近づいた
-        elif self.prev_dot_dist is not None and curr_dist > self.prev_dot_dist:
-            reward -= 0.1   # エサから離れた
-        self.prev_dot_dist = curr_dist
+        # ── エサへの接近ボーナス (報酬シェーピング、2ステップ毎に計算) ──
+        if self.steps % 2 == 0:
+            curr_dist = self._nearest_dot_dist()
+            if self.prev_dot_dist is not None and curr_dist < self.prev_dot_dist:
+                reward += 0.3   # エサに近づいた
+            elif self.prev_dot_dist is not None and curr_dist > self.prev_dot_dist:
+                reward -= 0.1   # エサから離れた
+            self.prev_dot_dist = curr_dist
 
         # ── ゴースト接近ペナルティ ──
         min_dist = self._min_ghost_dist()
@@ -369,8 +449,10 @@ class PacManEnv(gym.Env):
 
         # ── ゴースト移動 ──
         prev_ghost_pos = [g.pos[:] for g in self.ghosts]
+        blinky_pos = tuple(self.ghosts[0].pos)  # InkyのターゲットにBlinkyの位置が必要
         for g in self.ghosts:
-            g.move(self.grid, tuple(self.pacman), self.rng)
+            g.move(self.grid, tuple(self.pacman), self.pacman_dir, blinky_pos, self.rng,
+                   mode=self.ghost_mode)
 
         # ── 衝突判定② ゴーストがパックマンのマスへ来た / すり抜け ──
         for i, g in enumerate(self.ghosts):
@@ -385,13 +467,13 @@ class PacManEnv(gym.Env):
 
         # ── クリア判定 ──
         if self.dots_eaten >= self.total_dots:
-            reward += 50.0
+            reward += 20000.0
             terminated = True
 
         truncated = self.steps >= 1000
 
-        # ── 経路更新 (5ステップ毎) ──
-        if self.steps % 5 == 0:
+        # ── 経路更新: 描画時のみ実行（訓練時はスキップして高速化）──
+        if self.render_mode == "human" and self.steps % 5 == 0:
             self._update_planned_path()
             self._update_ghost_paths()
 
